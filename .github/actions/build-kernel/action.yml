@@ -50,6 +50,44 @@ runs:
     #       exit 1
     #     fi
 
+    - name: 'Pin perl for OID registry codegen'
+      # lib/Makefile's cmd_build_OID_registry calls a bare `perl`, which inside
+      # the kleaf sandbox resolves to a perl whose Cwd.so comes from a different
+      # perl build:
+      #   Cwd.c: loadable library and perl binaries are mismatched
+      #   (got first handshake key 0xf380080, needed 0xeb80080)
+      #   make[2]: *** [.../lib/Makefile:316: lib/oid_registry_data.c] Error 1
+      # This is the first recipe in the build that loads an XS module, so it
+      # only shows up when the bazel disk cache misses for that target. The
+      # runner's /usr/bin/perl (5.38.2, threaded) loads its own Cwd.so fine, so
+      # point the recipe at it explicitly. Deterministic: the generated file is
+      # a pure function of include/linux/oid_registry.h + build_OID_registry.
+      shell: bash
+      working-directory: ${{ github.workspace }}/kernel
+      run: |
+        MK=""
+        for cand in common/lib/Makefile lib/Makefile; do
+          [ -f "$cand" ] && MK="$cand" && break
+        done
+        if [ -z "$MK" ]; then
+          echo "WARN: lib/Makefile not found; skipping perl pin"
+          exit 0
+        fi
+        if [ ! -x /usr/bin/perl ]; then
+          echo "WARN: /usr/bin/perl missing; leaving the recipe alone"
+          exit 0
+        fi
+        if grep -q 'cmd_build_OID_registry = /usr/bin/perl ' "$MK"; then
+          echo "already pinned in $MK"
+          exit 0
+        fi
+        sed -i 's|cmd_build_OID_registry = perl |cmd_build_OID_registry = /usr/bin/perl |' "$MK"
+        if grep -q 'cmd_build_OID_registry = /usr/bin/perl ' "$MK"; then
+          echo "pinned OID registry codegen to /usr/bin/perl in $MK"
+        else
+          echo "WARN: could not pin $MK (recipe shape changed upstream); continuing"
+        fi
+
     - name: 'Build Kernel'
       shell: bash
       working-directory: ${{ github.workspace }}/kernel
